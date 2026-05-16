@@ -54,7 +54,7 @@ function markMissingTools() {
   });
 }
 
-/* ---------- Fade-up on scroll — with crossfade back up when past ---------- */
+/* ---------- Fade-up on scroll ---------- */
 const fadeObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     const el = entry.target;
@@ -66,7 +66,7 @@ const fadeObserver = new IntersectionObserver((entries) => {
 }, { threshold: 0.15 });
 document.querySelectorAll('.fade-up').forEach(el => fadeObserver.observe(el));
 
-/* ---------- Footer content crossfade in + back up ---------- */
+/* ---------- Footer content crossfade ---------- */
 const footerContent = document.querySelector('.footer-content');
 if (footerContent) {
   const footerObserver = new IntersectionObserver((entries) => {
@@ -75,7 +75,6 @@ if (footerContent) {
         footerContent.classList.add('in-view');
         footerContent.classList.remove('past-view');
       } else {
-        // Only animate back up if scrolling down past it (boundingClientRect.top < 0)
         if (entry.boundingClientRect.top < 0) {
           footerContent.classList.remove('in-view');
           footerContent.classList.add('past-view');
@@ -89,7 +88,7 @@ if (footerContent) {
   footerObserver.observe(footerContent);
 }
 
-/* ---------- WHAT I DO title crossfade back up when scrolled past ---------- */
+/* ---------- WHAT I DO title crossfade ---------- */
 const whatIDoTitle = document.querySelector('.contents-title');
 if (whatIDoTitle) {
   const titleObserver = new IntersectionObserver((entries) => {
@@ -135,7 +134,6 @@ const expBlocks = Array.from(document.querySelectorAll('.year-block'));
 const expLineEl = document.querySelector('.timeline-line');
 const expLineFill = document.querySelector('.timeline-line-fill');
 
-/* Set the line's bottom to end exactly at the LAST dot's center */
 function trimExpLine() {
   if (!expLineEl || !expBlocks.length) return;
   const timeline = document.querySelector('.timeline');
@@ -146,12 +144,8 @@ function trimExpLine() {
 
   const timelineRect = timeline.getBoundingClientRect();
   const dotRect = lastDot.getBoundingClientRect();
-
-  // distance from timeline TOP to last dot CENTER
   const dotCenterFromTop = (dotRect.top + dotRect.height / 2) - timelineRect.top;
-  // distance from timeline TOP to line TOP (the current `top: 18px` offset)
   const lineTopOffset = parseFloat(getComputedStyle(expLineEl).top) || 18;
-
   const lineHeight = dotCenterFromTop - lineTopOffset;
   expLineEl.style.bottom = 'auto';
   expLineEl.style.height = Math.max(0, lineHeight) + 'px';
@@ -189,18 +183,59 @@ function updateExperience() {
   }
 }
 
-/* ---------- CONTENTS — horizontal scrub + active sub-title ---------- */
+/* ---------- SECTION-BASED VIDEO MANAGEMENT ----------
+   Each scroll-section with data-has-video="true" gets its own
+   video set. Videos use data-src instead of src so nothing
+   loads until the section becomes the pinned/active one.
+   Only ONE section's videos play at a time.
+----------------------------------------------------- */
+
+/* Load src from data-src for all videos in a section (once only) */
+function loadSectionVideos(section) {
+  section.querySelectorAll('video[data-src]').forEach(v => {
+    if (!v.src || v.src === window.location.href) {
+      v.src = v.dataset.src;
+      v.load();
+    }
+  });
+}
+
+/* Play all videos in a section */
+function playSectionVideos(section) {
+  section.querySelectorAll('video').forEach(v => {
+    if (v.paused) v.play().catch(() => {});
+  });
+}
+
+/* Pause all videos in a section */
+function pauseSectionVideos(section) {
+  section.querySelectorAll('video').forEach(v => {
+    if (!v.paused) v.pause();
+  });
+}
+
+/* Track which section is currently active to avoid redundant calls */
+let activePinnedSection = null;
+
+/* ---------- CONTENTS — horizontal scrub + active sub-title + video gating ---------- */
 const scrollSections = document.querySelectorAll('.scroll-section');
 const sectionData = Array.from(scrollSections).map(section => ({
   section,
   stage: section.querySelector('.sticky-stage'),
   track: section.querySelector('.track'),
   cards: Array.from(section.querySelectorAll('.card')),
+  hasVideo: section.dataset.hasVideo === 'true',
 }));
 
 function updateContents() {
   const winH = window.innerHeight;
-  sectionData.forEach(({ section, stage, track, cards }) => {
+
+  /* Find which section is currently pinned (sticky-active).
+     We pick the one whose sticky stage is pinned: rect.top <= 0 && rect.bottom > winH.
+     If multiple qualify (edge case on fast scroll), prefer the one closest to center. */
+  let newActive = null;
+
+  sectionData.forEach(({ section, stage, track, cards, hasVideo }) => {
     if (!cards.length) return;
     const rect = section.getBoundingClientRect();
     const sectionH = section.offsetHeight;
@@ -213,7 +248,6 @@ function updateContents() {
     const floatIndex = progress * (n - 1);
     const activeIdx = Math.round(floatIndex);
 
-    track.style.transform = 'translateY(-50%) translateX(0px)';
     const stageWidth = stage.offsetWidth;
     const lo = Math.floor(floatIndex);
     const hi = Math.min(lo + 1, n - 1);
@@ -226,21 +260,36 @@ function updateContents() {
 
     cards.forEach((c, i) => {
       c.classList.remove('is-active', 'is-left', 'is-right');
-      if (i === activeIdx)         c.classList.add('is-active');
+      if (i === activeIdx)          c.classList.add('is-active');
       else if (i === activeIdx - 1) c.classList.add('is-left');
       else if (i === activeIdx + 1) c.classList.add('is-right');
     });
 
     const pinned = rect.top <= 0 && rect.bottom > winH;
-    if (pinned) stage.classList.add('active');
-    else        stage.classList.remove('active');
-
-    const visible = rect.top < winH && rect.bottom > 0;
-    section.querySelectorAll('video').forEach(v => {
-      if (visible) { if (v.paused) v.play().catch(()=>{}); }
-      else         { if (!v.paused) v.pause(); }
-    });
+    if (pinned) {
+      stage.classList.add('active');
+      if (hasVideo) newActive = section;
+    } else {
+      stage.classList.remove('active');
+    }
   });
+
+  /* Switch active video section when it changes */
+  if (newActive !== activePinnedSection) {
+    /* Pause the old section */
+    if (activePinnedSection) {
+      pauseSectionVideos(activePinnedSection);
+    }
+
+    /* Load + play the new section */
+    if (newActive) {
+      loadSectionVideos(newActive);
+      /* Small delay so the browser has a moment to buffer before playing */
+      setTimeout(() => playSectionVideos(newActive), 80);
+    }
+
+    activePinnedSection = newActive;
+  }
 }
 
 /* ---------- Scroll loop ---------- */
@@ -288,26 +337,19 @@ if (hero && arrowsEl) {
   heroObserver.observe(hero);
 }
 
-/* ---------- PORTFOLIO rubberband effect ----------
-   As you scroll down, the vertically-stretched PORTFOLIO title
-   gradually retracts back to its natural scale (scaleY 1).
-*/
+/* ---------- PORTFOLIO rubberband effect ---------- */
 const portfolioTitle = document.querySelector('.portfolio-title');
 function updatePortfolioRubberband() {
   if (!portfolioTitle) return;
   const heroEl = document.querySelector('.hero');
   if (!heroEl) return;
   const heroH = heroEl.offsetHeight;
-  // 0 when at top of page, 1 when scrolled to end of hero
   let progress = window.scrollY / heroH;
   progress = Math.max(0, Math.min(1, progress));
-  // Detect mobile
   const isMobile = window.innerWidth <= 720;
   const startScale = isMobile ? 1.6 : 1.35;
-  // Lerp startScale -> 1.0
   const scaleY = startScale - ((startScale - 1.0) * progress);
   portfolioTitle.style.transform = `scaleY(${scaleY})`;
-  // Sync font-size for mobile
   if (isMobile) {
     portfolioTitle.style.fontSize = '15.5vw';
   } else {
