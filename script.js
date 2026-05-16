@@ -15,6 +15,8 @@ function markPlaceholders() {
       img.addEventListener('error', fail);
       img.addEventListener('load',  () => (img.naturalWidth === 0 ? fail() : ok()));
     } else if (vid) {
+      // Lazy videos (data-src) have no src yet — skip now, wire up after src is set
+      if (vid.dataset.src) return;
       const label = '.mp4';
       const fail = () => { card.classList.add('placeholder'); card.dataset.label = label; };
       vid.addEventListener('error', fail);
@@ -138,10 +140,8 @@ function trimExpLine() {
   if (!expLineEl || !expBlocks.length) return;
   const timeline = document.querySelector('.timeline');
   if (!timeline) return;
-
   const lastDot = expBlocks[expBlocks.length - 1].querySelector('.dot');
   if (!lastDot) return;
-
   const timelineRect = timeline.getBoundingClientRect();
   const dotRect = lastDot.getBoundingClientRect();
   const dotCenterFromTop = (dotRect.top + dotRect.height / 2) - timelineRect.top;
@@ -183,28 +183,53 @@ function updateExperience() {
   }
 }
 
-/* ---------- SECTION-BASED VIDEO MANAGEMENT ----------
-   Each scroll-section with data-has-video="true" gets its own
-   video set. Videos use data-src instead of src so nothing
-   loads until the section becomes the pinned/active one.
-   Only ONE section's videos play at a time.
------------------------------------------------------ */
+/* ==========================================================
+   SECTION-BASED VIDEO MANAGEMENT
+   - Videos use data-src (no src) so browser loads nothing upfront
+   - When a section becomes pinned, we assign src and wait for
+     canplay before calling play() — this is the key fix for
+     the "needs refresh to play" bug
+   - Only ONE section plays at a time
+   ========================================================== */
 
-/* Load src from data-src for all videos in a section (once only) */
+let activePinnedSection = null;
+
+/* Wire up error → placeholder after src is assigned */
+function attachVideoPlaceholder(vid) {
+  const card = vid.closest('.card');
+  if (!card) return;
+  const fail = () => { card.classList.add('placeholder'); card.dataset.label = '.mp4'; };
+  vid.addEventListener('error', fail, { once: true });
+}
+
+/* Load src for every lazy video in a section (runs once per section) */
 function loadSectionVideos(section) {
   section.querySelectorAll('video[data-src]').forEach(v => {
-    if (!v.src || v.src === window.location.href) {
-      v.src = v.dataset.src;
-      v.load();
-    }
+    if (v.dataset.loaded) return; // already loaded
+    v.src = v.dataset.src;
+    v.dataset.loaded = 'true';
+    attachVideoPlaceholder(v);
+    v.load();
   });
+}
+
+/* Play a single video, waiting for canplay if not yet ready */
+function playVideo(v) {
+  if (!v.paused) return;
+  if (v.readyState >= 3) {
+    // Enough data — play immediately
+    v.play().catch(() => {});
+  } else {
+    // Wait for browser to buffer enough to play
+    v.addEventListener('canplay', () => {
+      v.play().catch(() => {});
+    }, { once: true });
+  }
 }
 
 /* Play all videos in a section */
 function playSectionVideos(section) {
-  section.querySelectorAll('video').forEach(v => {
-    if (v.paused) v.play().catch(() => {});
-  });
+  section.querySelectorAll('video').forEach(v => playVideo(v));
 }
 
 /* Pause all videos in a section */
@@ -214,10 +239,13 @@ function pauseSectionVideos(section) {
   });
 }
 
-/* Track which section is currently active to avoid redundant calls */
-let activePinnedSection = null;
+/* Activate a video section: load if needed, then play */
+function activateSection(section) {
+  loadSectionVideos(section);
+  playSectionVideos(section);
+}
 
-/* ---------- CONTENTS — horizontal scrub + active sub-title + video gating ---------- */
+/* ---------- CONTENTS — scrub + active stage + video gating ---------- */
 const scrollSections = document.querySelectorAll('.scroll-section');
 const sectionData = Array.from(scrollSections).map(section => ({
   section,
@@ -229,10 +257,6 @@ const sectionData = Array.from(scrollSections).map(section => ({
 
 function updateContents() {
   const winH = window.innerHeight;
-
-  /* Find which section is currently pinned (sticky-active).
-     We pick the one whose sticky stage is pinned: rect.top <= 0 && rect.bottom > winH.
-     If multiple qualify (edge case on fast scroll), prefer the one closest to center. */
   let newActive = null;
 
   sectionData.forEach(({ section, stage, track, cards, hasVideo }) => {
@@ -274,20 +298,10 @@ function updateContents() {
     }
   });
 
-  /* Switch active video section when it changes */
+  /* Only switch when the active section actually changes */
   if (newActive !== activePinnedSection) {
-    /* Pause the old section */
-    if (activePinnedSection) {
-      pauseSectionVideos(activePinnedSection);
-    }
-
-    /* Load + play the new section */
-    if (newActive) {
-      loadSectionVideos(newActive);
-      /* Small delay so the browser has a moment to buffer before playing */
-      setTimeout(() => playSectionVideos(newActive), 80);
-    }
-
+    if (activePinnedSection) pauseSectionVideos(activePinnedSection);
+    if (newActive) activateSection(newActive);
     activePinnedSection = newActive;
   }
 }
