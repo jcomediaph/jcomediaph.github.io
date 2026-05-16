@@ -182,13 +182,71 @@ function updateExperience() {
 }
 
 /* ==========================================================
-   SECTION-BASED VIDEO PLAY/PAUSE
-   All videos preload normally. Only the pinned section plays.
+   SECTION-BASED VIDEO PLAY/PAUSE + CASCADING PRELOAD
+   - Short Form: preloads immediately on page load (src in HTML)
+   - Long Form:  starts preloading once Short Form is loaded
+   - AI Content: starts preloading once Long Form is loaded
+   Only the pinned section plays at any time.
    ========================================================== */
 
 let activePinnedSection = null;
 
+/* Assign src from data-src and begin preloading a section's videos */
+function preloadSection(section) {
+  section.querySelectorAll('video[data-src]').forEach(v => {
+    if (!v.dataset.loaded) {
+      v.src = v.dataset.src;
+      v.preload = 'auto';
+      v.load();
+      v.dataset.loaded = 'true';
+    }
+  });
+}
+
+/* Returns true when all videos in a section have enough data to play */
+function isSectionLoaded(section) {
+  const videos = Array.from(section.querySelectorAll('video'));
+  return videos.every(v => v.readyState >= 3);
+}
+
+/* Cascade: load each video section after the previous one is ready */
+function initCascadingPreload() {
+  const videoSections = Array.from(
+    document.querySelectorAll('.scroll-section[data-has-video="true"]')
+  );
+  if (!videoSections.length) return;
+
+  // First section (Short Form) is already preloading via src in HTML
+  // Kick off the chain once it has enough data
+  function loadNext(index) {
+    if (index >= videoSections.length) return;
+    const section = videoSections[index];
+
+    // If this section uses data-src, assign src now
+    preloadSection(section);
+
+    // Wait until this section is loaded, then trigger the next
+    const videos = Array.from(section.querySelectorAll('video'));
+    let loaded = 0;
+    const onLoaded = () => {
+      loaded++;
+      if (loaded >= videos.length) loadNext(index + 1);
+    };
+    videos.forEach(v => {
+      if (v.readyState >= 3) {
+        onLoaded();
+      } else {
+        v.addEventListener('canplaythrough', onLoaded, { once: true });
+      }
+    });
+  }
+
+  loadNext(0);
+}
+
 function playSectionVideos(section) {
+  // If user scrolled here before the cascade reached it, load now immediately
+  preloadSection(section);
   section.querySelectorAll('video').forEach(v => {
     if (v.paused) v.play().catch(() => {});
   });
@@ -332,6 +390,7 @@ function updatePortfolioRubberband() {
 /* ---------- INIT ---------- */
 function init() {
   pauseAllVideos();
+  initCascadingPreload();
   markPlaceholders();
   markMissingProfile();
   markMissingTools();
