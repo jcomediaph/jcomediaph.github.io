@@ -900,3 +900,22 @@ button { font-family: inherit; cursor: pointer; }
   html { scroll-behavior: auto; }
   .card, .card.is-left, .card.is-right { transform: scale(1) !important; }
 }
+
+/* =====================================================
+   CANVAS VIDEO PLAYER
+   ===================================================== */
+
+/* Canvas fills the card exactly like video did */
+.card .vid-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+}
+
+/* Hidden video — pixel source only, never shown */
+.card .vid-src {
+  display: none !important;
+}
