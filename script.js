@@ -6,7 +6,7 @@
 function markPlaceholders() {
   document.querySelectorAll('.card').forEach(card => {
     const img = card.querySelector('img');
-    const vid = card.querySelector('video');
+    const vid = card.querySelector('.vid-src');
     if (img) {
       const label = '.png';
       const fail = () => { card.classList.add('placeholder'); card.dataset.label = label; };
@@ -15,14 +15,9 @@ function markPlaceholders() {
       img.addEventListener('error', fail);
       img.addEventListener('load',  () => (img.naturalWidth === 0 ? fail() : ok()));
     } else if (vid) {
-      // Lazy videos (data-src) have no src yet — skip now, wire up after src is set
-      if (vid.dataset.src) return;
       const label = '.mp4';
       const fail = () => { card.classList.add('placeholder'); card.dataset.label = label; };
       vid.addEventListener('error', fail);
-      setTimeout(() => {
-        if (vid.error || vid.networkState === 3 || vid.readyState === 0) fail();
-      }, 900);
     }
   });
 }
@@ -184,74 +179,136 @@ function updateExperience() {
 }
 
 /* ==========================================================
-   SECTION-BASED VIDEO MANAGEMENT
-   - Videos use data-src (no src) so browser loads nothing upfront
-   - When a section becomes pinned, we assign src and wait for
-     canplay before calling play() — this is the key fix for
-     the "needs refresh to play" bug
-   - Only ONE section plays at a time
+   CANVAS VIDEO SYSTEM
+   Each .card with a .vid-canvas + .vid-src gets its own
+   CanvasPlayer instance. The player:
+   - Sizes the canvas to match the card on init and resize
+   - Draws frames via requestAnimationFrame using cover-fit
+   - start() → plays the video + begins RAF loop
+   - stop()  → pauses the video + cancels RAF (canvas freezes
+               on the last drawn frame — no black flash)
    ========================================================== */
 
-let activePinnedSection = null;
+class CanvasPlayer {
+  constructor(card) {
+    this.card    = card;
+    this.canvas  = card.querySelector('.vid-canvas');
+    this.video   = card.querySelector('.vid-src');
+    this.ctx     = this.canvas.getContext('2d');
+    this.rafId   = null;
+    this.running = false;
+    this._setupCanvas();
+  }
 
-/* Wire up error → placeholder after src is assigned */
-function attachVideoPlaceholder(vid) {
-  const card = vid.closest('.card');
-  if (!card) return;
-  const fail = () => { card.classList.add('placeholder'); card.dataset.label = '.mp4'; };
-  vid.addEventListener('error', fail, { once: true });
-}
+  _setupCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = this.card.offsetWidth  || 300;
+    const h = this.card.offsetHeight || 300;
+    this.canvas.width  = w * dpr;
+    this.canvas.height = h * dpr;
+    this.ctx.scale(dpr, dpr);
+    // CSS size — canvas element fills the card via CSS
+  }
 
-/* Load src for every lazy video in a section (runs once per section) */
-function loadSectionVideos(section) {
-  section.querySelectorAll('video[data-src]').forEach(v => {
-    if (v.dataset.loaded) return; // already loaded
-    v.src = v.dataset.src;
-    v.dataset.loaded = 'true';
-    attachVideoPlaceholder(v);
-    v.load();
-  });
-}
+  resize() {
+    // Redraw at new size without losing the current frame
+    const dpr = window.devicePixelRatio || 1;
+    const w = this.card.offsetWidth  || 300;
+    const h = this.card.offsetHeight || 300;
+    this.canvas.width  = w * dpr;
+    this.canvas.height = h * dpr;
+    this.ctx.scale(dpr, dpr);
+    this._drawFrame(); // repaint immediately so no blank flash on resize
+  }
 
-/* Play a single video, waiting for canplay if not yet ready */
-function playVideo(v) {
-  if (!v.paused) return;
-  if (v.readyState >= 3) {
-    // Enough data — play immediately
-    v.play().catch(() => {});
-  } else {
-    // Wait for browser to buffer enough to play
-    v.addEventListener('canplay', () => {
-      v.play().catch(() => {});
-    }, { once: true });
+  _drawFrame() {
+    const v   = this.video;
+    const ctx = this.ctx;
+    const cw  = this.card.offsetWidth;
+    const ch  = this.card.offsetHeight;
+    const vw  = v.videoWidth  || cw;
+    const vh  = v.videoHeight || ch;
+    if (!vw || !vh) return;
+
+    // Cover-fit: scale so the video fills the canvas, centered
+    const scale = Math.max(cw / vw, ch / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const dx = (cw - dw) / 2;
+    const dy = (ch - dh) / 2;
+
+    try {
+      ctx.clearRect(0, 0, cw, ch);
+      ctx.drawImage(v, dx, dy, dw, dh);
+    } catch (e) {}
+  }
+
+  _loop() {
+    this._drawFrame();
+    if (this.running) {
+      this.rafId = requestAnimationFrame(() => this._loop());
+    }
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.video.play().catch(() => {});
+    this.rafId = requestAnimationFrame(() => this._loop());
+  }
+
+  stop() {
+    this.running = false;
+    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+    this.video.pause();
+    // Canvas keeps the last drawn frame — no black flash
   }
 }
 
-/* Play all videos in a section */
-function playSectionVideos(section) {
-  section.querySelectorAll('video').forEach(v => playVideo(v));
+/* Build a CanvasPlayer for every video card */
+const allPlayers = [];
+document.querySelectorAll('.card').forEach(card => {
+  if (card.querySelector('.vid-canvas') && card.querySelector('.vid-src')) {
+    allPlayers.push(new CanvasPlayer(card));
+  }
+});
+
+/* Map each scroll-section to its players */
+const sectionPlayers = new Map();
+document.querySelectorAll('.scroll-section[data-has-video="true"]').forEach(section => {
+  const players = allPlayers.filter(p => section.contains(p.card));
+  sectionPlayers.set(section, players);
+});
+
+function startSectionPlayers(section) {
+  const players = sectionPlayers.get(section) || [];
+  players.forEach(p => p.start());
 }
 
-/* Pause all videos in a section */
-function pauseSectionVideos(section) {
-  section.querySelectorAll('video').forEach(v => {
-    if (!v.paused) v.pause();
-  });
+function stopSectionPlayers(section) {
+  const players = sectionPlayers.get(section) || [];
+  players.forEach(p => p.stop());
 }
 
-/* Activate a video section: load if needed, then play */
-function activateSection(section) {
-  loadSectionVideos(section);
-  playSectionVideos(section);
+function stopAllPlayers() {
+  allPlayers.forEach(p => p.stop());
 }
 
-/* ---------- CONTENTS — scrub + active stage + video gating ---------- */
+/* Resize all canvases on window resize */
+function resizePlayers() {
+  allPlayers.forEach(p => p.resize());
+}
+
+/* ---------- Active section tracking ---------- */
+let activePinnedSection = null;
+
+/* ---------- CONTENTS — scrub + active stage + canvas video gating ---------- */
 const scrollSections = document.querySelectorAll('.scroll-section');
 const sectionData = Array.from(scrollSections).map(section => ({
   section,
-  stage: section.querySelector('.sticky-stage'),
-  track: section.querySelector('.track'),
-  cards: Array.from(section.querySelectorAll('.card')),
+  stage:    section.querySelector('.sticky-stage'),
+  track:    section.querySelector('.track'),
+  cards:    Array.from(section.querySelectorAll('.card')),
   hasVideo: section.dataset.hasVideo === 'true',
 }));
 
@@ -261,23 +318,23 @@ function updateContents() {
 
   sectionData.forEach(({ section, stage, track, cards, hasVideo }) => {
     if (!cards.length) return;
-    const rect = section.getBoundingClientRect();
+    const rect     = section.getBoundingClientRect();
     const sectionH = section.offsetHeight;
     const scrolled = -rect.top;
-    const total = sectionH - winH;
-    let progress = total > 0 ? scrolled / total : 0;
+    const total    = sectionH - winH;
+    let progress   = total > 0 ? scrolled / total : 0;
     progress = Math.max(0, Math.min(1, progress));
 
-    const n = cards.length;
+    const n         = cards.length;
     const floatIndex = progress * (n - 1);
-    const activeIdx = Math.round(floatIndex);
+    const activeIdx  = Math.round(floatIndex);
 
     const stageWidth = stage.offsetWidth;
     const lo = Math.floor(floatIndex);
     const hi = Math.min(lo + 1, n - 1);
-    const t = floatIndex - lo;
-    const loCenter = cards[lo].offsetLeft + cards[lo].offsetWidth / 2;
-    const hiCenter = cards[hi].offsetLeft + cards[hi].offsetWidth / 2;
+    const t  = floatIndex - lo;
+    const loCenter  = cards[lo].offsetLeft + cards[lo].offsetWidth / 2;
+    const hiCenter  = cards[hi].offsetLeft + cards[hi].offsetWidth / 2;
     const cardCenter = loCenter + (hiCenter - loCenter) * t;
     const x = stageWidth / 2 - cardCenter;
     track.style.transform = `translateY(-50%) translateX(${x}px)`;
@@ -298,10 +355,10 @@ function updateContents() {
     }
   });
 
-  /* Only switch when the active section actually changes */
+  /* Switch canvas players only when the active section changes */
   if (newActive !== activePinnedSection) {
-    if (activePinnedSection) pauseSectionVideos(activePinnedSection);
-    if (newActive) activateSection(newActive);
+    if (activePinnedSection) stopSectionPlayers(activePinnedSection);
+    if (newActive)           startSectionPlayers(newActive);
     activePinnedSection = newActive;
   }
 }
@@ -322,6 +379,7 @@ function onScroll() {
 window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('resize', () => {
   trimExpLine();
+  resizePlayers();
   updatePortfolioRubberband();
   updateExperience();
   updateContents();
@@ -360,7 +418,7 @@ function updatePortfolioRubberband() {
   const heroH = heroEl.offsetHeight;
   let progress = window.scrollY / heroH;
   progress = Math.max(0, Math.min(1, progress));
-  const isMobile = window.innerWidth <= 720;
+  const isMobile  = window.innerWidth <= 720;
   const startScale = isMobile ? 1.6 : 1.35;
   const scaleY = startScale - ((startScale - 1.0) * progress);
   portfolioTitle.style.transform = `scaleY(${scaleY})`;
@@ -373,6 +431,7 @@ function updatePortfolioRubberband() {
 
 /* ---------- INIT ---------- */
 function init() {
+  stopAllPlayers();     // nothing plays on load
   markPlaceholders();
   markMissingProfile();
   markMissingTools();
