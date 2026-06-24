@@ -183,9 +183,9 @@ function updateExperience() {
 
 /* ==========================================================
    SECTION-BASED VIDEO PLAY/PAUSE + CASCADING PRELOAD
-   - Short Form: preloads immediately on page load (src in HTML)
+   - AI Content: preloads immediately on page load (src in HTML)
+   - Short Form: starts preloading once AI Content is loaded
    - Long Form:  starts preloading once Short Form is loaded
-   - AI Content: starts preloading once Long Form is loaded
    Only the pinned section plays at any time.
    ========================================================== */
 
